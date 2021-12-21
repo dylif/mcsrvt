@@ -1,0 +1,133 @@
+#!/bin/bash
+
+APP_NAME="mcsrvt"
+MCSRVT_USAGE="Usage: $APP_NAME <src> <dest> [removeoldlogs=yes|no]"
+REMOVE_OLD_LOGS=false
+
+if [ -z "$1" ]; then
+    echo "Error: no log path specified"
+    echo "$MCSRVT_USAGE"
+    exit 1
+fi
+
+if [ -z "$2" ]; then
+    echo "Error: no source path specified"
+    echo "$MCSRVT_USAGE"
+    exit 1
+fi
+
+if [ -n "$3" ] && [ "$3" = "removeoldlogs=yes" ]; then
+    REMOVE_OLD_LOGS=true
+fi
+
+# Get canoncial path for src and dest for later use
+SRC=$(realpath "$1")
+DEST=$(realpath "$2")
+
+SRC_HASH=$(printf "%s" "$SRC" | md5sum | head -c 32)
+
+# Setup log directory
+LOG_ROOT_BASENAME=$APP_NAME
+LOG_ROOT_DIRNAME=$HOME/.local/state
+[[ -n "$XDG_STATE_HOME" ]] && LOG_ROOT_DIRNAME=$XDG_STATE_HOME
+LOG_ROOT=$LOG_ROOT_DIRNAME/$LOG_ROOT_BASENAME/$SRC_HASH
+mkdir_output=$(mkdir -p "$LOG_ROOT")
+status=$?
+if [ $status -ne 0 ]; then
+    echo "Error: mkdir $LOG_ROOT failed"
+    printf "%s\n" "$mkdir_output"
+    exit $status
+fi
+
+# Setup config directory
+CONFIG_ROOT_BASENAME=$APP_NAME
+CONFIG_ROOT_DIRNAME=$HOME/.config
+[[ -n "$XDG_CONFIG_HOME" ]] && CONFIG_ROOT_DIRNAME=$XDG_CONFIG_HOME
+CONFIG_ROOT=$CONFIG_ROOT_DIRNAME/$CONFIG_ROOT_BASENAME/$SRC_HASH
+mkdir_output=$(mkdir -p "$CONFIG_ROOT")
+status=$?
+if [ $status -ne 0 ]; then
+    status=$?
+    echo "Error: mkdir $CONFIG_ROOT failed"
+    printf "%s\n" "$mkdir_output"
+    exit $status
+fi
+
+CONFIG_NON_RECURSIVE_BASENAME="r-.conf"
+CONFIG_NON_RECURSIVE=$CONFIG_ROOT/$CONFIG_NON_RECURSIVE_BASENAME
+
+CONFIG_RECURSIVE_ONLY_WILDCARD_BASENAME="r0.conf"
+CONFIG_RECURSIVE_ONLY_WILDCARD=$CONFIG_ROOT/$CONFIG_RECURSIVE_ONLY_WILDCARD_BASENAME
+
+CONFIG_RECURSIVE_BASENAME="r.conf"
+CONFIG_RECURSIVE=$CONFIG_ROOT/$CONFIG_RECURSIVE_BASENAME
+
+ZFILENAME=$(date +'%Y-%m-%d_%H-%M-%S')
+ZLOG=$LOG_ROOT/$ZFILENAME.log
+ZPASSWD=$(pwgen -s 32 1)
+
+
+echo "LOG START"
+echo "--------------------------------------------------------------------------------"
+
+{
+    echo "Touch $ZLOG"
+    touch "$ZLOG" || {
+        echo "Failed"
+        exit 1
+    }
+    echo "Success!"
+
+    echo "Change mode of log file to 600"
+    chmod -v 600 "$ZLOG" || {
+        exit 1
+    }
+    echo
+
+    ZARGS=(
+        -p"$ZPASSWD"
+        -y
+        -mhe=on
+    )
+
+    echo "Test what config files for $SRC (hash: $SRC_HASH) exist"
+
+    [[ -f "$CONFIG_NON_RECURSIVE" ]] && {
+        echo "$CONFIG_NON_RECURSIVE exists"
+        ZARGS+=( -xr-@"$CONFIG_NON_RECURSIVE" )
+    } || echo "$CONFIG_NON_RECURSIVE does not exist"
+
+    [[ -f "$CONFIG_RECURSIVE_ONLY_WILDCARD" ]] && {
+        echo "$CONFIG_RECURSIVE_ONLY_WILDCARD exists"
+        ZARGS+=( -xr0@"$CONFIG_RECURSIVE_ONLY_WILDCARD" )
+    } || echo "$CONFIG_RECURSIVE_ONLY_WILDCARD does not exist"
+
+    [[ -f "$CONFIG_RECURSIVE" ]] && {
+        echo "$CONFIG_RECURSIVE exists"
+        ZARGS+=( -xr@"$CONFIG_RECURSIVE" )
+    } || echo "$CONFIG_RECURSIVE does not exist"
+
+    echo
+    echo
+    echo "Archive password: $ZPASSWD"
+    echo "Source directory: $SRC"
+    echo "Destination directory: $DEST"
+    echo
+    echo
+
+    7z a "${ZARGS[@]}" -bb -- "$DEST"/"$ZFILENAME".7z "$SRC"/"*" || {
+        echo "Failed to create 7zip archive"
+        exit 1
+    }
+    echo
+
+    if [ $REMOVE_OLD_LOGS = true ]; then
+        echo "Remove compressed (old) logs from source directory if they exist"
+        rm --interactive=never -rv "$SRC"/logs/*.gz         \
+            || echo "Failed or nothing found (exit code: $?)"
+        echo
+    fi
+
+    echo "Done!"
+    echo
+} 2>&1 | tee "$ZLOG"; exit "${PIPESTATUS[0]}"
